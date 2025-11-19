@@ -467,6 +467,10 @@ export namespace Config {
         })
         .optional(),
       plugin: z.string().array().optional(),
+      disabled_plugins: z
+        .array(z.string())
+        .optional()
+        .describe("List of plugin paths or names to disable (will not be loaded)"),
       snapshot: z.boolean().optional(),
       share: z
         .enum(["manual", "auto", "disabled"])

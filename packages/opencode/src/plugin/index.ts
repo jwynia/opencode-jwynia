@@ -7,6 +7,8 @@ import { Server } from "../server/server"
 import { BunProc } from "../bun"
 import { Instance } from "../project/instance"
 import { Flag } from "../flag/flag"
+import fs from "fs/promises"
+import path from "path"
 
 export namespace Plugin {
   const log = Log.create({ service: "plugin" })
@@ -17,6 +19,166 @@ export namespace Plugin {
     error?: string
     loadedAt?: Date
     hooks?: string[]
+    metadata?: {
+      name?: string
+      version?: string
+      description?: string
+    }
+  }
+
+  /**
+   * Extract metadata from a plugin module if available
+   */
+  function extractMetadata(mod: any): PluginStatus["metadata"] {
+    const metadata: PluginStatus["metadata"] = {}
+
+    // Look for metadata exports
+    if (mod.metadata && typeof mod.metadata === "object") {
+      metadata.name = mod.metadata.name
+      metadata.version = mod.metadata.version
+      metadata.description = mod.metadata.description
+    }
+
+    // Alternative: look for individual exports
+    if (!metadata.name && typeof mod.name === "string") {
+      metadata.name = mod.name
+    }
+    if (!metadata.version && typeof mod.version === "string") {
+      metadata.version = mod.version
+    }
+    if (!metadata.description && typeof mod.description === "string") {
+      metadata.description = mod.description
+    }
+
+    return Object.keys(metadata).length > 0 ? metadata : undefined
+  }
+
+  type ValidationResult = {
+    valid: boolean
+    error?: string
+    suggestion?: string
+  }
+
+  /**
+   * Generate actionable error suggestions based on error type
+   */
+  function getErrorSuggestion(error: unknown, context: "install" | "import" | "init"): string {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+
+    // Installation errors
+    if (context === "install") {
+      if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        return "Package not found on npm. Verify the package name and version are correct."
+      }
+      if (errorMessage.includes("network") || errorMessage.includes("ENOTFOUND")) {
+        return "Network error. Check your internet connection and try again."
+      }
+      if (errorMessage.includes("permission") || errorMessage.includes("EACCES")) {
+        return "Permission denied. Check file permissions or try running with appropriate permissions."
+      }
+      return "Check the package name and version, ensure npm registry is accessible."
+    }
+
+    // Import errors
+    if (context === "import") {
+      if (errorMessage.includes("SyntaxError") || errorMessage.includes("Unexpected token")) {
+        return "Syntax error in plugin code. Fix syntax errors in the plugin file and try again."
+      }
+      if (errorMessage.includes("Cannot find module") || errorMessage.includes("Module not found")) {
+        return "Missing dependency. Run 'bun install' in the plugin directory or check import paths."
+      }
+      if (errorMessage.includes("Unexpected identifier")) {
+        return "Invalid JavaScript/TypeScript syntax. Review the plugin code for syntax errors."
+      }
+      return "Check plugin syntax and ensure all dependencies are installed."
+    }
+
+    // Initialization errors
+    if (context === "init") {
+      if (errorMessage.includes("is not a function")) {
+        return "Plugin export is not a valid function. Ensure the plugin exports functions that return hook objects."
+      }
+      if (errorMessage.includes("undefined") || errorMessage.includes("null")) {
+        return "Plugin returned invalid value. Check that plugin functions return valid hook objects."
+      }
+      return "Check plugin initialization logic and ensure it follows the plugin API specification."
+    }
+
+    return "Review the error message and plugin code to identify the issue."
+  }
+
+  /**
+   * Validate a plugin path before attempting to load it
+   */
+  async function validatePlugin(pluginPath: string): Promise<ValidationResult> {
+    // Check for file:// URLs
+    if (pluginPath.startsWith("file://")) {
+      const filePath = pluginPath.replace("file://", "")
+
+      // Check if file exists
+      try {
+        const stats = await fs.stat(filePath)
+        if (!stats.isFile()) {
+          return {
+            valid: false,
+            error: "Path exists but is not a file",
+            suggestion: `Expected a file but found a directory at: ${filePath}`,
+          }
+        }
+      } catch (err) {
+        return {
+          valid: false,
+          error: "File not found",
+          suggestion: `Plugin file does not exist: ${filePath}. Check the path and ensure the file is present.`,
+        }
+      }
+
+      // Check file extension
+      const ext = path.extname(filePath)
+      if (![".ts", ".js", ".mjs", ".cjs"].includes(ext)) {
+        return {
+          valid: false,
+          error: `Unsupported file type: ${ext}`,
+          suggestion: `Plugin files must be TypeScript (.ts) or JavaScript (.js, .mjs, .cjs). Found: ${ext}`,
+        }
+      }
+
+      return { valid: true }
+    }
+
+    // Validate npm package name format
+    const lastAtIndex = pluginPath.lastIndexOf("@")
+    const pkg = lastAtIndex > 0 ? pluginPath.substring(0, lastAtIndex) : pluginPath
+    const version = lastAtIndex > 0 ? pluginPath.substring(lastAtIndex + 1) : "latest"
+
+    // Check for invalid characters in package name
+    if (pkg.includes(" ") || pkg.includes("\n") || pkg.includes("\t")) {
+      return {
+        valid: false,
+        error: "Invalid package name",
+        suggestion: `Package name contains whitespace: "${pkg}". Remove spaces and special characters.`,
+      }
+    }
+
+    // Check for scoped package format
+    if (pkg.startsWith("@") && !pkg.includes("/")) {
+      return {
+        valid: false,
+        error: "Invalid scoped package name",
+        suggestion: `Scoped packages must include a slash: @scope/package. Found: ${pkg}`,
+      }
+    }
+
+    // Check for empty package name
+    if (!pkg || pkg.trim() === "") {
+      return {
+        valid: false,
+        error: "Empty package name",
+        suggestion: "Package name cannot be empty",
+      }
+    }
+
+    return { valid: true }
   }
 
   const state = Instance.state(async () => {
@@ -48,9 +210,38 @@ export namespace Plugin {
       plugins.push("opencode-anthropic-auth@0.0.2")
     }
 
+    const disabledPlugins = new Set(config.disabled_plugins ?? [])
+
     for (let plugin of plugins) {
       const originalPath = plugin
       log.info("loading plugin", { path: plugin })
+
+      // Check if plugin is disabled in config
+      if (disabledPlugins.has(plugin)) {
+        log.info("plugin disabled via config", { path: plugin })
+        pluginStatuses.push({
+          path: originalPath,
+          status: "disabled",
+          error: "Disabled in configuration (disabled_plugins list)",
+        })
+        continue // Skip to next plugin
+      }
+
+      // Validate plugin before attempting to load
+      const validation = await validatePlugin(plugin)
+      if (!validation.valid) {
+        log.error("plugin validation failed", {
+          path: plugin,
+          error: validation.error,
+          suggestion: validation.suggestion,
+        })
+        pluginStatuses.push({
+          path: originalPath,
+          status: "failed",
+          error: `${validation.error}${validation.suggestion ? `: ${validation.suggestion}` : ""}`,
+        })
+        continue // Skip to next plugin
+      }
 
       try {
         // Install npm package if needed
@@ -64,11 +255,12 @@ export namespace Plugin {
             log.info("plugin package installed", { pkg, version, path: plugin })
           } catch (installError) {
             const errorMessage = installError instanceof Error ? installError.message : String(installError)
-            log.error("plugin installation failed", { pkg, version, error: errorMessage })
+            const suggestion = getErrorSuggestion(installError, "install")
+            log.error("plugin installation failed", { pkg, version, error: errorMessage, suggestion })
             pluginStatuses.push({
               path: originalPath,
               status: "failed",
-              error: `Installation failed: ${errorMessage}`,
+              error: `Installation failed: ${errorMessage}. ${suggestion}`,
             })
             continue // Skip to next plugin
           }
@@ -81,11 +273,12 @@ export namespace Plugin {
           log.info("plugin module imported", { path: plugin })
         } catch (importError) {
           const errorMessage = importError instanceof Error ? importError.message : String(importError)
-          log.error("plugin import failed", { path: plugin, error: errorMessage })
+          const suggestion = getErrorSuggestion(importError, "import")
+          log.error("plugin import failed", { path: plugin, error: errorMessage, suggestion })
           pluginStatuses.push({
             path: originalPath,
             status: "failed",
-            error: `Import failed: ${errorMessage}`,
+            error: `Import failed: ${errorMessage}. ${suggestion}`,
           })
           continue // Skip to next plugin
         }
@@ -111,10 +304,12 @@ export namespace Plugin {
             }
           } catch (initError) {
             const errorMessage = initError instanceof Error ? initError.message : String(initError)
+            const suggestion = getErrorSuggestion(initError, "init")
             log.error("plugin initialization failed", {
               path: plugin,
               function: name,
               error: errorMessage,
+              suggestion,
             })
             // Don't fail the entire plugin if one function fails
             // Just log and continue with other functions
@@ -122,16 +317,19 @@ export namespace Plugin {
         }
 
         if (pluginHookCount > 0) {
+          const metadata = extractMetadata(mod)
           log.info("plugin loaded successfully", {
             path: plugin,
             hooks: pluginHookCount,
             hookNames: pluginHookNames,
+            metadata,
           })
           pluginStatuses.push({
             path: originalPath,
             status: "loaded",
             loadedAt: new Date(),
             hooks: pluginHookNames,
+            metadata,
           })
         } else {
           log.warn("plugin loaded but provided no hooks", { path: plugin })

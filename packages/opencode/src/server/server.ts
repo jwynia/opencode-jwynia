@@ -253,6 +253,13 @@ export namespace Server {
                           error: z.string().optional(),
                           loadedAt: z.date().optional(),
                           hooks: z.array(z.string()).optional(),
+                          metadata: z
+                            .object({
+                              name: z.string().optional(),
+                              version: z.string().optional(),
+                              description: z.string().optional(),
+                            })
+                            .optional(),
                         }),
                       )
                       .meta({
