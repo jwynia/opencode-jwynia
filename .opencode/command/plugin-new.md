@@ -53,6 +53,7 @@ export const $ARGUMENTS: Plugin = (input) => {
 ```
 
 After creating the file:
+
 1. Show the full path to the created plugin file
 2. Explain that the plugin will be automatically loaded on next OpenCode restart
 3. Suggest adding the plugin to .opencode/opencode.jsonc if they want to share it with the team

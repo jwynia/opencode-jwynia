@@ -45,5 +45,6 @@ Perform the following validation steps:
 Format the output clearly with sections for each validation step and a summary at the end.
 
 If no plugin path is provided in $ARGUMENTS, show usage examples:
+
 - Test local file: `/plugin-test file:///path/to/my-plugin.ts`
 - Test npm package: `/plugin-test my-plugin-package@1.0.0`
