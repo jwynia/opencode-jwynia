@@ -12,6 +12,7 @@ import path from "path"
 
 export namespace Plugin {
   const log = Log.create({ service: "plugin" })
+  const debugMode = Flag.OPENCODE_DEBUG_PLUGINS
 
   export type PluginStatus = {
     path: string
@@ -243,6 +244,10 @@ export namespace Plugin {
         continue // Skip to next plugin
       }
 
+      if (debugMode) {
+        log.info("plugin validation passed", { path: plugin })
+      }
+
       try {
         // Install npm package if needed
         if (!plugin.startsWith("file://")) {
@@ -290,6 +295,9 @@ export namespace Plugin {
           if (typeof fn !== "function") continue
 
           try {
+            if (debugMode) {
+              log.info("initializing plugin function", { path: plugin, function: name })
+            }
             const init = await fn(input)
             hooks.push(init)
             pluginHookCount++
@@ -301,6 +309,13 @@ export namespace Plugin {
                   pluginHookNames.push(hookName)
                 }
               }
+            }
+            if (debugMode) {
+              log.info("plugin function initialized", {
+                path: plugin,
+                function: name,
+                providedHooks: Object.keys(init || {}),
+              })
             }
           } catch (initError) {
             const errorMessage = initError instanceof Error ? initError.message : String(initError)
