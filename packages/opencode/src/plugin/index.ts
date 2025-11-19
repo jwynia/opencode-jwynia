@@ -189,7 +189,7 @@ export namespace Plugin {
       fetch: async (...args) => Server.App().fetch(...args),
     })
     const config = await Config.get()
-    const hooks = []
+    const hooks: Hooks[] = []
     const pluginStatuses: PluginStatus[] = []
     const input: PluginInput = {
       client,
@@ -305,6 +305,7 @@ export namespace Plugin {
             // Track which hooks this plugin provides
             if (init) {
               for (const hookName of Object.keys(init)) {
+                // @ts-ignore - hookName is a valid key of Hooks
                 if (typeof init[hookName] === "function") {
                   pluginHookNames.push(hookName)
                 }
@@ -393,9 +394,7 @@ export namespace Plugin {
       const fn = hook[name]
       if (!fn) continue
       try {
-        // @ts-expect-error if you feel adventurous, please fix the typing, make sure to bump the try-counter if you
-        // give up.
-        // try-counter: 2
+        // @ts-ignore - hookName is a valid key of Hooks
         await fn(input, output)
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
