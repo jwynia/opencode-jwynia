@@ -23,6 +23,7 @@ import { Instance } from "../project/instance"
 import { Agent } from "../agent/agent"
 import { Auth } from "../auth"
 import { Command } from "../command"
+import { Plugin } from "../plugin"
 import { Global } from "../global"
 import { ProjectRoute } from "./project"
 import { ToolRegistry } from "../tool/registry"
@@ -231,6 +232,40 @@ export namespace Server {
           const config = c.req.valid("json")
           await Config.update(config)
           return c.json(config)
+        },
+      )
+      .get(
+        "/plugin",
+        describeRoute({
+          description: "Get plugin status",
+          operationId: "plugin.status",
+          responses: {
+            200: {
+              description: "Plugin status information",
+              content: {
+                "application/json": {
+                  schema: resolver(
+                    z
+                      .array(
+                        z.object({
+                          path: z.string(),
+                          status: z.enum(["loaded", "failed", "disabled"]),
+                          error: z.string().optional(),
+                          loadedAt: z.date().optional(),
+                          hooks: z.array(z.string()).optional(),
+                        }),
+                      )
+                      .meta({
+                        ref: "PluginStatus",
+                      }),
+                  ),
+                },
+              },
+            },
+          },
+        }),
+        async (c) => {
+          return c.json(await Plugin.status())
         },
       )
       .get(
